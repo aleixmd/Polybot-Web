@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bet Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #0d1117; color: #c9d1d9; min-height: 100vh; padding: 24px 28px;
+}
+header {
+  display: flex; align-items: center; gap: 16px;
+  margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #21262d;
+}
+header h1 { font-size: 18px; font-weight: 700; color: #e6edf3; }
+#summary { font-size: 12px; color: #8b949e; }
+.spacer { flex: 1; }
+#last-updated { font-size: 12px; color: #8b949e; }
+#refresh-btn {
+  padding: 5px 13px; background: #21262d; border: 1px solid #30363d;
+  border-radius: 6px; color: #c9d1d9; cursor: pointer; font-size: 13px;
+}
+#refresh-btn:hover { background: #30363d; }
+
+#root { display: flex; flex-direction: column; gap: 14px; }
+
+.city-card {
+  background: #161b22; border: 1px solid #30363d; border-radius: 10px; overflow: hidden;
+}
+.city-card.risk-critical { border-color: #f85149; }
+.city-card.risk-high     { border-color: #f0883e; }
+.city-card.risk-medium   { border-color: #e3b341; }
+.city-card.risk-won      { border-color: #3fb950; }
+
+.card-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 18px; border-bottom: 1px solid #21262d;
+}
+.city-name { font-size: 17px; font-weight: 700; color: #e6edf3; }
+.city-stats { font-size: 12px; color: #8b949e; display: flex; gap: 12px; }
+.city-stats b { color: #c9d1d9; }
+.risk-badge {
+  margin-left: auto; padding: 3px 10px; border-radius: 5px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+}
+.badge-critical { background: rgba(248,81,73,0.15); color: #f85149; border: 1px solid rgba(248,81,73,0.3); }
+.badge-high     { background: rgba(240,136,62,0.15); color: #f0883e; border: 1px solid rgba(240,136,62,0.3); }
+.badge-medium   { background: rgba(227,179,65,0.15); color: #e3b341; border: 1px solid rgba(227,179,65,0.3); }
+.badge-low      { background: rgba(63,185,80,0.12);  color: #3fb950; border: 1px solid rgba(63,185,80,0.25); }
+.badge-won      { background: rgba(63,185,80,0.20);  color: #3fb950; border: 1px solid rgba(63,185,80,0.5); }
+
+.card-body { display: grid; grid-template-columns: 1fr 320px; }
+.chart-wrap {
+  padding: 14px 16px; border-right: 1px solid #21262d;
+  position: relative; height: 220px;
+}
+.chart-wrap canvas { width: 100% !important; height: 100% !important; }
+.chart-src { position: absolute; bottom: 4px; right: 8px; font-size: 9px; color: #30363d; pointer-events: none; }
+.chart-no-data {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; gap: 6px; color: #484f58; font-size: 12px;
+}
+.chart-no-data .icon { font-size: 20px; opacity: 0.6; }
+
+.bets-panel { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+.bet-row {
+  display: grid; grid-template-columns: auto 1fr auto auto;
+  align-items: center; gap: 8px; padding: 8px 10px;
+  border-radius: 6px; background: #1c2128; border: 1px solid #30363d;
+}
+.bet-row.at-risk { border-color: rgba(248,81,73,0.5);  background: rgba(248,81,73,0.05); }
+.bet-row.warning { border-color: rgba(227,179,65,0.4); background: rgba(227,179,65,0.04); }
+.bet-row.won     { border-color: rgba(63,185,80,0.45); background: rgba(63,185,80,0.06); }
+
+.badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+.badge-yes { background: rgba(63,185,80,0.12);  color: #3fb950; }
+.badge-no  { background: rgba(248,81,73,0.12);  color: #f85149; }
+
+.bet-threshold { font-size: 13px; font-weight: 600; color: #e6edf3; }
+.bet-threshold .op { font-size: 11px; color: #8b949e; margin-right: 2px; }
+.bet-margin { font-size: 12px; font-weight: 600; text-align: right; }
+.margin-safe { color: #3fb950; }
+.margin-warn { color: #e3b341; }
+.margin-risk { color: #f85149; }
+.bet-meta { font-size: 11px; color: #8b949e; line-height: 1.5; text-align: right; }
+.bet-meta b { color: #c9d1d9; }
+
+.loading { text-align: center; padding: 60px; color: #8b949e; font-size: 14px; }
+.no-positions { text-align: center; padding: 40px; color: #8b949e; }
+
+@media (max-width: 760px) {
+  .card-body { grid-template-columns: 1fr; }
+  .chart-wrap { border-right: none; border-bottom: 1px solid #21262d; }
+  .bets-panel { max-height: 300px; }
+  body { padding: 14px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Bet Monitor</h1>
+  <span id="summary">–</span>
+  <span class="spacer"></span>
+  <span id="last-updated">–</span>
+  <button id="refresh-btn" onclick="loadAll()">↻ Refresh</button>
+</header>
+
+<div id="root"><div class="loading">Loading positions…</div></div>
+
+<script>
+const WALLET = "0x9Fd64979a0d2bD5781EA6ac09143C7af21835AB1";
+
+// ── City metadata (ICAO = same stations WU uses, served via IEM ASOS API) ─────
+const CITIES = {
+  'madrid':        { lat: 40.45,   lon: -3.58,    tz: 'Europe/Madrid',                  icao: 'LEMD' },
+  'paris':         { lat: 49.02,   lon: 2.59,     tz: 'Europe/Paris',                   icao: 'LFPG' },
+  'london':        { lat: 51.51,   lon: 0.03,     tz: 'Europe/London',                  icao: 'EGLC' },
+  'seoul':         { lat: 37.49,   lon: 126.49,   tz: 'Asia/Seoul',                     icao: 'RKSI' },
+  'tokyo':         { lat: 35.55,   lon: 139.78,   tz: 'Asia/Tokyo',                     icao: 'RJTT' },
+  'tel-aviv':      { lat: 31.93,   lon: 34.86,    tz: 'Asia/Jerusalem',                 icao: 'LLBG' },
+  'chicago':       { lat: 41.97,   lon: -87.91,   tz: 'America/Chicago',                icao: 'KORD' },
+  'los-angeles':   { lat: 33.94,   lon: -118.41,  tz: 'America/Los_Angeles',            icao: 'KLAX' },
+  'miami':         { lat: 25.80,   lon: -80.29,   tz: 'America/New_York',               icao: 'KMIA' },
+  'houston':       { lat: 29.99,   lon: -95.34,   tz: 'America/Chicago',                icao: 'KHOU' },
+  'singapore':     { lat: 1.36,    lon: 103.99,   tz: 'Asia/Singapore',                 icao: 'WSSS' },
+  'toronto':       { lat: 43.68,   lon: -79.62,   tz: 'America/Toronto',                icao: 'CYYZ' },
+  'sao-paulo':     { lat: -23.44,  lon: -46.47,   tz: 'America/Sao_Paulo',              icao: 'SBGR' },
+  'buenos-aires':  { lat: -34.82,  lon: -58.54,   tz: 'America/Argentina/Buenos_Aires', icao: 'SAEZ' },
+  'beijing':       { lat: 40.08,   lon: 116.60,   tz: 'Asia/Shanghai',                  icao: 'ZBAA' },
+  'shanghai':      { lat: 31.14,   lon: 121.81,   tz: 'Asia/Shanghai',                  icao: 'ZSPD' },
+  'taipei':        { lat: 25.08,   lon: 121.23,   tz: 'Asia/Taipei',                    icao: 'RCSS' },
+  'warsaw':        { lat: 52.17,   lon: 20.97,    tz: 'Europe/Warsaw',                  icao: 'EPWA' },
+  'shenzhen':      { lat: 22.64,   lon: 113.81,   tz: 'Asia/Shanghai',                  icao: 'ZGSZ' },
+  'atlanta':       { lat: 33.749,  lon: -84.388,  tz: 'America/New_York',               icao: 'KATL' },
+  'wellington':    { lat: -41.287, lon: 174.776,  tz: 'Pacific/Auckland',               icao: 'NZWN' },
+  'nyc':           { lat: 40.641,  lon: -73.778,  tz: 'America/New_York',               icao: 'KLGA' },
+  'chongqing':     { lat: 29.72,   lon: 106.64,   tz: 'Asia/Shanghai',                  icao: 'ZUCK' },
+  'hong-kong':     { lat: 22.31,   lon: 113.92,   tz: 'Asia/Hong_Kong',                 icao: 'VHHH' },
+  'ankara':        { lat: 40.13,   lon: 32.995,   tz: 'Europe/Istanbul',                icao: 'LTAC' },
+  'wuhan':         { lat: 30.78,   lon: 114.21,   tz: 'Asia/Shanghai',                  icao: 'ZHHH' },
+  'seattle':       { lat: 47.45,   lon: -122.31,  tz: 'America/Los_Angeles',            icao: 'KSEA' },
+  'lucknow':       { lat: 26.76,   lon: 80.89,    tz: 'Asia/Kolkata',                   icao: 'VILK' },
+  'dallas':        { lat: 32.90,   lon: -97.04,   tz: 'America/Chicago',                icao: 'KDAL' },
+  'chengdu':       { lat: 30.58,   lon: 103.95,   tz: 'Asia/Shanghai',                  icao: 'ZUUU' },
+  'munich':        { lat: 48.35,   lon: 11.78,    tz: 'Europe/Berlin',                  icao: 'EDDM' },
+  'milan':         { lat: 45.45,   lon: 9.28,     tz: 'Europe/Rome',                    icao: 'LIMC' },
+  'denver':        { lat: 39.86,   lon: -104.67,  tz: 'America/Denver',                 icao: 'KBKF' },
+  'austin':        { lat: 30.20,   lon: -97.67,   tz: 'America/Chicago',                icao: 'KAUS' },
+  'san-francisco': { lat: 37.62,   lon: -122.38,  tz: 'America/Los_Angeles',            icao: 'KSFO' },
+  'istanbul':      { lat: 41.26,   lon: 28.74,    tz: 'Europe/Istanbul',                icao: 'LTBA' },
+  'amsterdam':     { lat: 52.31,   lon: 4.77,     tz: 'Europe/Amsterdam',               icao: 'EHAM' },
+  'busan':         { lat: 35.18,   lon: 128.94,   tz: 'Asia/Seoul',                     icao: 'RKPK' },
+  'helsinki':      { lat: 60.32,   lon: 24.96,    tz: 'Europe/Helsinki',                icao: 'EFHK' },
+  'jakarta':       { lat: -6.27,   lon: 106.89,   tz: 'Asia/Jakarta',                   icao: 'WIHH' },
+  'kuala-lumpur':  { lat: 2.75,    lon: 101.71,   tz: 'Asia/Kuala_Lumpur',              icao: 'WMKK' },
+  'mexico-city':   { lat: 19.44,   lon: -99.07,   tz: 'America/Mexico_City',            icao: 'MMMX' },
+  'moscow':        { lat: 55.59,   lon: 37.26,    tz: 'Europe/Moscow',                  icao: null   },
+  'cape-town':     { lat: -33.96,  lon: 18.60,    tz: 'Africa/Johannesburg',            icao: 'FACT' },
+  'jeddah':        { lat: 21.68,   lon: 39.16,    tz: 'Asia/Riyadh',                    icao: 'OEJN' },
+  'lagos':         { lat: 6.58,    lon: 3.32,     tz: 'Africa/Lagos',                   icao: 'DNMM' },
+  'guangzhou':     { lat: 23.39,   lon: 113.30,   tz: 'Asia/Shanghai',                  icao: 'ZGGG' },
+  'karachi':       { lat: 24.91,   lon: 67.16,    tz: 'Asia/Karachi',                   icao: 'OPKC' },
+  'manila':        { lat: 14.51,   lon: 121.02,   tz: 'Asia/Manila',                    icao: 'RPLL' },
+  'qingdao':       { lat: 36.27,   lon: 120.37,   tz: 'Asia/Shanghai',                  icao: 'ZSQD' },
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function parseTitle(title) {
+  const cityM = title.match(/temperature in ([A-Za-z\s\-]+?) be/i);
+  const cityName = cityM ? cityM[1].trim() : '';
+  const citySlug = cityName.toLowerCase().replace(/\bnyc\b/i, 'nyc').replace(/\s+/g, '-');
+  const thrM = title.match(/be (-?\d+(?:\.\d+)?)°?([CF])/i);
+  const threshold = thrM ? parseFloat(thrM[1]) : null;
+  const unit = thrM ? thrM[2].toUpperCase() : 'C';
+  const isOrHigher = title.toLowerCase().includes('or higher');
+  const thresholdC = (threshold !== null && unit === 'F') ? (threshold - 32) * 5 / 9 : threshold;
+  return { cityName, citySlug, threshold, unit, isOrHigher, thresholdC };
+}
+
+function getLocalHour(tz) {
+  try {
+    return parseInt(new Intl.DateTimeFormat('en', {
+      timeZone: tz, hour: 'numeric', hour12: false
+    }).format(new Date())) % 24;
+  } catch { return new Date().getUTCHours(); }
+}
+
+// Filter: only keep positions whose endDate is today or future (UTC date comparison)
+function isCurrentOrFuture(p) {
+  const dateStr = p.endDate || p.endDateIso || p.startDate || null;
+  if (!dateStr) return true; // no date info → keep
+  const todayUTC = new Date().toISOString().slice(0, 10);
+  return dateStr.slice(0, 10) >= todayUTC;
+}
+
+function marginClass(d) {
+  if (d <= 0) return 'margin-risk';
+  if (d <= 1) return 'margin-warn';
+  return 'margin-safe';
+}
+
+function riskInfo(minDist, allWon) {
+  if (allWon)     return { label: 'WON',     cls: 'badge-won',      cardCls: 'risk-won',      sort: -1 };
+  if (minDist <= 0) return { label: 'AT RISK', cls: 'badge-critical', cardCls: 'risk-critical', sort: 0 };
+  if (minDist <= 1) return { label: 'HIGH',    cls: 'badge-high',     cardCls: 'risk-high',     sort: 1 };
+  if (minDist <= 2) return { label: 'MEDIUM',  cls: 'badge-medium',   cardCls: 'risk-medium',   sort: 2 };
+  return               { label: 'LOW',     cls: 'badge-low',      cardCls: '',              sort: 3 };
+}
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── API: Positions ────────────────────────────────────────────────────────────
+async function fetchPositions() {
+  const r = await fetch(
+    `https://data-api.polymarket.com/positions?user=${WALLET}&limit=500&sizeThreshold=0`
+  );
+  return r.json();
+}
+
+// ── API: IEM ASOS (same station data WU uses, CORS-friendly) ─────────────────
+async function fetchIEM(icao, tz) {
+  const now   = new Date();
+  const yest  = new Date(now); yest.setUTCDate(now.getUTCDate() - 1);
+
+  const url = new URL('https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py');
+  url.searchParams.set('station', icao);
+  url.searchParams.set('data',    'tmpc');
+  url.searchParams.set('year1',   yest.getUTCFullYear());
+  url.searchParams.set('month1',  yest.getUTCMonth() + 1);
+  url.searchParams.set('day1',    yest.getUTCDate());
+  url.searchParams.set('year2',   now.getUTCFullYear());
+  url.searchParams.set('month2',  now.getUTCMonth() + 1);
+  url.searchParams.set('day2',    now.getUTCDate());
+  url.searchParams.set('tz',      'UTC');
+  url.searchParams.set('format',  'onlycomma');
+  url.searchParams.set('latlon',  'no');
+  url.searchParams.set('missing', 'M');
+  url.searchParams.set('trace',   'T');
+  url.searchParams.set('direct',  'no');
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal });
+    return await r.text();
+  } finally { clearTimeout(timer); }
+}
+
+function parseIEM(csvText, tz) {
+  const lines = csvText.split('\n').filter(l => l && !l.startsWith('#'));
+  if (lines.length < 2) return {};
+
+  const dateFmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+  });
+  const hourFmt = new Intl.DateTimeFormat('en', { timeZone: tz, hour: 'numeric', hour12: false });
+  const todayLocal = dateFmt.format(new Date());
+  const result = {};
+
+  for (const line of lines.slice(1)) {
+    const parts = line.split(',');
+    if (parts.length < 3) continue;
+    const tempStr = parts[2].trim();
+    if (!tempStr || tempStr === 'M') continue;
+    const tempC = parseFloat(tempStr);
+    if (isNaN(tempC)) continue;
+    const utcDate = new Date(parts[1].trim().replace(' ', 'T') + 'Z');
+    if (dateFmt.format(utcDate) !== todayLocal) continue;
+    const hour = parseInt(hourFmt.format(utcDate)) % 24;
+    result[hour] = tempC; // last obs per hour wins
+  }
+  return result;
+}
+
+async function fetchIEMWithRetry(icao, tz) {
+  try { return await fetchIEM(icao, tz); }
+  catch { await delay(800); return fetchIEM(icao, tz); }
+}
+
+// ── API: Open-Meteo (forecast + gap fill) ────────────────────────────────────
+async function fetchOM(lat, lon, tz) {
+  const url = new URL('https://api.open-meteo.com/v1/forecast');
+  url.searchParams.set('latitude',         lat);
+  url.searchParams.set('longitude',        lon);
+  url.searchParams.set('timezone',         tz);
+  url.searchParams.set('hourly',           'temperature_2m');
+  url.searchParams.set('temperature_unit', 'celsius');
+  url.searchParams.set('forecast_days',    '1');
+  url.searchParams.set('past_days',        '0');
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal });
+    return r.json();
+  } finally { clearTimeout(timer); }
+}
+
+async function fetchOMWithRetry(lat, lon, tz) {
+  try { return await fetchOM(lat, lon, tz); }
+  catch { await delay(700); return fetchOM(lat, lon, tz); }
+}
+
+// ── Chart ─────────────────────────────────────────────────────────────────────
+const _charts = {};
+
+function renderChart(canvasId, hours, pastTemps, fcastTemps, currentHour, threshLines) {
+  const ctx = document.getElementById(canvasId)?.getContext('2d');
+  if (!ctx) return;
+  if (_charts[canvasId]) _charts[canvasId].destroy();
+
+  const pastData  = hours.map(h => h < currentHour  ? pastTemps[h]  ?? null : null);
+  const fcastData = hours.map(h => h >= currentHour ? fcastTemps[h] ?? null : null);
+  if (currentHour < 24) {
+    pastData[currentHour]  = fcastTemps[currentHour] ?? pastTemps[currentHour] ?? null;
+    fcastData[currentHour] = pastData[currentHour];
+  }
+
+  const allVals = [
+    ...Object.values(pastTemps), ...Object.values(fcastTemps),
+    ...threshLines.map(t => t.value),
+  ].filter(v => v != null && isFinite(v));
+  if (allVals.length === 0) return;
+
+  const yMin = Math.floor(Math.min(...allVals)) - 1;
+  const yMax = Math.ceil(Math.max(...allVals)) + 1;
+
+  const nowPlugin = {
+    id: 'nowLine_' + canvasId,
+    beforeDraw(chart) {
+      const c = chart.ctx, xs = chart.scales.x, ys = chart.scales.y;
+      const px = xs.getPixelForValue(currentHour);
+      c.save(); c.strokeStyle = 'rgba(200,200,200,0.2)'; c.lineWidth = 1;
+      c.setLineDash([3,4]); c.beginPath();
+      c.moveTo(px, ys.top); c.lineTo(px, ys.bottom); c.stroke(); c.restore();
+    }
+  };
+
+  _charts[canvasId] = new Chart(ctx, {
+    type: 'line', plugins: [nowPlugin],
+    data: {
+      labels: hours.map(h => h + 'h'),
+      datasets: [
+        ...threshLines.map(t => ({
+          label: t.label, data: hours.map(() => t.value),
+          borderColor: t.color, borderWidth: 1.5,
+          borderDash: [5,4], pointRadius: 0, fill: false, tension: 0,
+        })),
+        { label: 'Observed', data: pastData,
+          borderColor: '#58a6ff', borderWidth: 2.5,
+          pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3, spanGaps: false },
+        { label: 'Forecast (OM)', data: fcastData,
+          borderColor: '#8b949e', borderWidth: 1.5, borderDash: [4,4],
+          pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3, spanGaps: false },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1c2128', borderColor: '#30363d', borderWidth: 1,
+          titleColor: '#8b949e', bodyColor: '#e6edf3', padding: 8,
+          filter: item => item.parsed.y !== null,
+          callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(1)}°C` }
+        }
+      },
+      scales: {
+        x: { grid: { color: '#1c2128' }, ticks: { color: '#8b949e', font: { size: 10 }, maxTicksLimit: 12 } },
+        y: { min: yMin, max: yMax, grid: { color: '#1c2128' },
+             ticks: { color: '#8b949e', font: { size: 10 }, callback: v => v + '°' } }
+      }
+    }
+  });
+}
+
+// ── Risk distance for a single NO bet ─────────────────────────────────────────
+// Returns a signed distance:  positive → safe margin,  negative or 0 → at risk
+// For "≥ X" NO: threshold - effMax  (positive = below threshold = SAFE)
+// For "= X" NO: temp well above X → WON (+); near X → risky (0/−); below X after 14h → risky (−)
+function calcDist(thresholdC, isOrHigher, effMax, currentHour) {
+  if (isOrHigher) {
+    return thresholdC - effMax;
+  }
+  // "= X" NO bet
+  const diff = effMax - thresholdC; // positive = above threshold
+  if (diff > 1.0) {
+    // Well above X → daily max can't be exactly X → WON
+    return diff;
+  } else if (diff > -1.0) {
+    // Within ±1°C of threshold → HIGH RISK (might peak at exactly X)
+    return diff;
+  } else {
+    // More than 1°C below threshold
+    if (currentHour >= 14 && diff > -3.0) {
+      // Past typical peak time and within 3°C below → still risky (could peak at X)
+      return diff; // negative → AT RISK / HIGH
+    } else {
+      // Before peak, or too far below (>3°C) → temp won't be exactly X
+      return Math.abs(diff);
+    }
+  }
+}
+
+// ── Card builder ──────────────────────────────────────────────────────────────
+function buildCard(cityName, citySlug, positions, iemTemps, omData) {
+  const meta = CITIES[citySlug];
+  const tz   = meta?.tz ?? 'UTC';
+  const currentHour = getLocalHour(tz);
+  const hours = Array.from({ length: 24 }, (_, i) => i);
+
+  // Past: IEM observations. Gaps filled with OM analysis. Future: OM forecast.
+  const pastTemps  = { ...iemTemps };
+  const fcastTemps = {};
+  const omTimes = omData?.hourly?.time ?? [];
+  const omTemps = omData?.hourly?.temperature_2m ?? [];
+  omTimes.forEach((t, i) => {
+    const h = parseInt(t.slice(11, 13));
+    const v = omTemps[i];
+    if (v == null) return;
+    if (h > currentHour)         fcastTemps[h] = v;
+    else if (!(h in pastTemps))  pastTemps[h]  = v; // fill IEM gap
+  });
+  const omCurr = omTemps[currentHour];
+  if (omCurr != null) {
+    if (!(currentHour in pastTemps)) pastTemps[currentHour] = omCurr;
+    fcastTemps[currentHour] = omCurr;
+  }
+
+  const pastVals  = Object.values(pastTemps);
+  const fcastVals = Object.values(fcastTemps);
+  const maxObs    = pastVals.length  ? Math.max(...pastVals)  : null;
+  const maxFcast  = fcastVals.length ? Math.max(...fcastVals) : null;
+
+  // Most recent observed temperature (for "current vs threshold" display)
+  const currentT  = pastTemps[currentHour] ?? pastTemps[currentHour - 1] ?? null;
+
+  const hasTemp   = pastVals.length > 0 || fcastVals.length > 0;
+  const effMax    = hasTemp ? Math.max(maxObs ?? -Infinity, maxFcast ?? -Infinity) : null;
+  const hasIEM    = Object.keys(iemTemps).length > 0;
+  const srcLabel  = hasIEM ? 'WU/ASOS' : (hasTemp ? 'OM' : null);
+
+  // Sort positions by threshold descending (hottest first)
+  const parsed = positions
+    .map(p => ({ ...p, ...parseTitle(p.title) }))
+    .sort((a, b) => (b.threshold ?? 0) - (a.threshold ?? 0));
+
+  const threshLines = [];
+  let minDist  = Infinity;
+  let wonCount = 0;
+  let noCount  = 0;
+
+  parsed.forEach(p => {
+    if (p.thresholdC == null) return;
+    const isNo = p.outcome === 'No';
+
+    let dist;
+    if (effMax !== null) {
+      if (isNo) {
+        dist = calcDist(p.thresholdC, p.isOrHigher, effMax, currentHour);
+      } else {
+        dist = p.thresholdC - effMax; // YES bets: standard
+      }
+    } else if (isNo && p.curPrice != null) {
+      dist = (p.curPrice - 0.5) * 4.0; // price fallback
+    } else {
+      dist = Infinity;
+    }
+
+    if (isNo) {
+      minDist = Math.min(minDist, dist);
+      noCount++;
+      // A "= X" NO bet is WON when effMax is well above threshold
+      const isWon = !p.isOrHigher && effMax !== null && effMax > p.thresholdC + 1.0;
+      if (isWon) wonCount++;
+    }
+
+    let color = '#58a6ff';
+    if (isNo) {
+      color = dist <= 0 ? '#f85149' : dist <= 1 ? '#f0883e' : dist <= 2 ? '#e3b341' : '#3fb950';
+    }
+    const label = `${isNo ? 'NO' : 'YES'} ${p.isOrHigher ? '≥' : '='}${p.threshold}°${p.unit}`;
+    if (!threshLines.find(t => Math.abs(t.value - p.thresholdC) < 0.1)) {
+      threshLines.push({ label, value: p.thresholdC, color });
+    }
+  });
+
+  const allWon = noCount > 0 && wonCount === noCount;
+  const risk   = riskInfo(minDist === Infinity ? 999 : minDist, allWon);
+  const canvasId = 'chart-' + citySlug + '-' + Date.now();
+
+  // ── Bet rows ──
+  const betRows = parsed.map(p => {
+    const isNo  = p.outcome === 'No';
+    const isWon = isNo && !p.isOrHigher && effMax !== null && effMax > p.thresholdC + 1.0;
+
+    let dist = null, priceFallback = false;
+    if (isNo && p.thresholdC != null) {
+      if (effMax !== null) {
+        dist = calcDist(p.thresholdC, p.isOrHigher, effMax, currentHour);
+      } else if (p.curPrice != null) {
+        dist = (p.curPrice - 0.5) * 4.0;
+        priceFallback = true;
+      }
+    }
+
+    // Display number: currentTemp - threshold (how far current temp is from the target)
+    const diff = (currentT !== null && p.thresholdC !== null) ? currentT - p.thresholdC : null;
+
+    const rowCls = isWon ? 'won' : (dist !== null ? (dist <= 0 ? 'at-risk' : dist <= 1.5 ? 'warning' : '') : '');
+    const op     = p.isOrHigher ? '≥' : '=';
+
+    let distStr;
+    if (isWon) {
+      distStr = `<span class="bet-margin margin-safe" style="font-weight:700">WON ✓</span>`;
+    } else if (dist === null || diff === null) {
+      distStr = `<span class="bet-margin" style="color:#8b949e">–</span>`;
+    } else if (priceFallback) {
+      distStr = `<span class="bet-margin ${marginClass(dist)}" title="Market price (no temp data)">${((p.curPrice ?? 0.5) * 100).toFixed(0)}¢</span>`;
+    } else {
+      // Show signed currentTemp - threshold; color based on risk dist
+      distStr = `<span class="bet-margin ${marginClass(dist)}">${diff >= 0 ? '+' : ''}${diff.toFixed(1)}°C</span>`;
+    }
+
+    const pnlCls = (p.cashPnl || 0) >= 0 ? 'color:#3fb950' : 'color:#f85149';
+    const pnlStr = ((p.cashPnl || 0) >= 0 ? '+' : '') + '$' + Math.abs(p.cashPnl || 0).toFixed(2);
+
+    return `<div class="bet-row ${rowCls}">
+      <span class="badge ${isNo ? 'badge-no' : 'badge-yes'}">${p.outcome.toUpperCase()}</span>
+      <span class="bet-threshold"><span class="op">${op}</span>${p.threshold}°${p.unit}</span>
+      ${distStr}
+      <div class="bet-meta">
+        <b>${((p.curPrice || 0) * 100).toFixed(1)}¢</b><br>
+        <span style="${pnlCls}">${pnlStr}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  const curStr   = currentT != null ? currentT.toFixed(1) + '°C' : '–';
+  const maxStr   = maxObs   != null ? maxObs.toFixed(1)   + '°C' : '–';
+  const fcastStr = maxFcast != null ? maxFcast.toFixed(1) + '°C' : '–';
+
+  const chartContent = hasTemp
+    ? `<canvas id="${canvasId}"></canvas><div class="chart-src">${srcLabel}</div>`
+    : `<div class="chart-no-data"><span class="icon">⚡</span><span>Temp data unavailable</span><span style="font-size:11px">Risk from market price</span></div>`;
+
+  const cardHtml = `
+    <div class="city-card ${risk.cardCls}" data-sort="${risk.sort}">
+      <div class="card-header">
+        <span class="city-name">${cityName}</span>
+        <div class="city-stats">
+          <span>Now: <b>${curStr}</b></span>
+          <span>Max obs: <b>${maxStr}</b></span>
+          <span>Forecast max: <b>${fcastStr}</b></span>
+        </div>
+        <span class="risk-badge ${risk.cls}">${risk.label}</span>
+      </div>
+      <div class="card-body">
+        <div class="chart-wrap">${chartContent}</div>
+        <div class="bets-panel">${betRows || '<span style="color:#8b949e;font-size:13px">No bets</span>'}</div>
+      </div>
+    </div>`;
+
+  return { html: cardHtml, canvasId, hours, pastTemps, fcastTemps, currentHour, threshLines, sort: risk.sort, minDist, hasTemp };
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+async function loadAll() {
+  const btn = document.getElementById('refresh-btn');
+  btn.textContent = '↻ Loading…'; btn.disabled = true;
+  document.getElementById('summary').textContent = 'Fetching positions…';
+
+  try {
+    const allPositions = await fetchPositions();
+    if (!Array.isArray(allPositions) || allPositions.length === 0) {
+      document.getElementById('root').innerHTML = '<div class="no-positions">No open positions found.</div>';
+      document.getElementById('summary').textContent = '0 bets';
+      return;
+    }
+
+    // Only show today's positions (filter out past-day markets by endDate)
+    const positions = allPositions.filter(isCurrentOrFuture);
+
+    if (positions.length === 0) {
+      document.getElementById('root').innerHTML = '<div class="no-positions">No positions for today.</div>';
+      document.getElementById('summary').textContent = `0 today (${allPositions.length} total)`;
+      return;
+    }
+
+    // Group by city
+    const cityMap = {};
+    for (const pos of positions) {
+      const { cityName, citySlug } = parseTitle(pos.title);
+      if (!citySlug) continue;
+      if (!cityMap[citySlug]) cityMap[citySlug] = { cityName, positions: [] };
+      cityMap[citySlug].positions.push(pos);
+    }
+
+    const slugs = Object.keys(cityMap);
+
+    // Fetch IEM + OM per city (parallel within city, sequential between cities)
+    const iemMap = {}, omMap = {};
+    for (let i = 0; i < slugs.length; i++) {
+      const slug = slugs[i];
+      const meta = CITIES[slug];
+      document.getElementById('summary').textContent =
+        `${positions.length} bets · Fetching temp ${i + 1}/${slugs.length}…`;
+
+      const [iemRes, omRes] = await Promise.allSettled([
+        meta?.icao ? fetchIEMWithRetry(meta.icao, meta.tz) : Promise.resolve(''),
+        meta       ? fetchOMWithRetry(meta.lat, meta.lon, meta.tz) : Promise.resolve(null),
+      ]);
+
+      const iemCsv = iemRes.status === 'fulfilled' ? iemRes.value : '';
+      iemMap[slug] = (meta?.icao && iemCsv) ? parseIEM(iemCsv, meta.tz) : {};
+      omMap[slug]  = omRes.status === 'fulfilled' ? omRes.value : null;
+
+      if (i < slugs.length - 1) await delay(300);
+    }
+
+    // Build + sort cards (most at risk first, WON cards go to bottom)
+    const cards = slugs
+      .map(slug => buildCard(cityMap[slug].cityName, slug, cityMap[slug].positions, iemMap[slug], omMap[slug]))
+      .sort((a, b) => a.sort - b.sort || a.minDist - b.minDist);
+
+    document.getElementById('root').innerHTML = cards.map(c => c.html).join('');
+
+    const iemOk = slugs.filter(s => Object.keys(iemMap[s]).length > 0).length;
+    document.getElementById('summary').textContent =
+      `${positions.length} bets · ${slugs.length} cities · WU/ASOS ${iemOk}/${slugs.length}`;
+
+    cards.forEach(c => {
+      if (c.hasTemp) {
+        renderChart(c.canvasId, c.hours, c.pastTemps, c.fcastTemps, c.currentHour, c.threshLines);
+      }
+    });
+
+    document.getElementById('last-updated').textContent =
+      'Updated ' + new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+  } catch (e) {
+    console.error(e);
+    document.getElementById('root').innerHTML =
+      `<div class="loading" style="color:#f85149">Error: ${e.message}</div>`;
+    document.getElementById('summary').textContent = 'Error';
+  } finally {
+    btn.textContent = '↻ Refresh'; btn.disabled = false;
+  }
+}
+
+loadAll();
+</script>
+</body>
+</html>
