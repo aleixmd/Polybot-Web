@@ -198,17 +198,17 @@ function isCurrentOrFuture(p) {
 }
 
 function marginClass(d) {
-  if (d <= 0) return 'margin-risk';
-  if (d <= 1) return 'margin-warn';
+  if (d <= 1) return 'margin-risk'; // ≤1°C from threshold → red
+  if (d <= 2) return 'margin-warn';
   return 'margin-safe';
 }
 
 function riskInfo(minDist, allWon) {
-  if (allWon)     return { label: 'WON',     cls: 'badge-won',      cardCls: 'risk-won',      sort: -1 };
-  if (minDist <= 0) return { label: 'AT RISK', cls: 'badge-critical', cardCls: 'risk-critical', sort: 0 };
-  if (minDist <= 1) return { label: 'HIGH',    cls: 'badge-high',     cardCls: 'risk-high',     sort: 1 };
-  if (minDist <= 2) return { label: 'MEDIUM',  cls: 'badge-medium',   cardCls: 'risk-medium',   sort: 2 };
-  return               { label: 'LOW',     cls: 'badge-low',      cardCls: '',              sort: 3 };
+  if (allWon)       return { label: 'WON',     cls: 'badge-won',      cardCls: 'risk-won',      sort: -1 };
+  if (minDist <= 1) return { label: 'AT RISK', cls: 'badge-critical', cardCls: 'risk-critical', sort: 0 };
+  if (minDist <= 2) return { label: 'HIGH',    cls: 'badge-high',     cardCls: 'risk-high',     sort: 1 };
+  if (minDist <= 3) return { label: 'MEDIUM',  cls: 'badge-medium',   cardCls: 'risk-medium',   sort: 2 };
+  return                 { label: 'LOW',     cls: 'badge-low',      cardCls: '',              sort: 3 };
 }
 
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -380,31 +380,49 @@ function renderChart(canvasId, hours, pastTemps, fcastTemps, currentHour, thresh
 }
 
 // ── Risk distance for a single NO bet ─────────────────────────────────────────
-// Returns a signed distance:  positive → safe margin,  negative or 0 → at risk
-// For "≥ X" NO: threshold - effMax  (positive = below threshold = SAFE)
-// For "= X" NO: temp well above X → WON (+); near X → risky (0/−); below X after 14h → risky (−)
-function calcDist(thresholdC, isOrHigher, effMax, currentHour) {
+// Returns distance-from-losing: large positive = safe, ≤1 = AT RISK, ≤2 = HIGH, ≤3 = MEDIUM
+// isOrHigher=true  → "≥ X" NO: win if temp stays BELOW X all day
+// isOrHigher=false → "= X" NO: win if daily max ≠ X (clearly below OR clearly above)
+function calcDist(thresholdC, isOrHigher, currentT, maxObs, fcastTemps, currentHour) {
   if (isOrHigher) {
-    return thresholdC - effMax;
+    // Late in day + still well below threshold → effectively won
+    if (currentHour >= 18 && maxObs !== null && thresholdC - maxObs >= 2.5) return 10;
+    const curr = currentT ?? maxObs;
+    if (curr === null) return Infinity;
+    return thresholdC - curr; // positive = safe margin, ≤1 = AT RISK
   }
-  // "= X" NO bet
-  const diff = effMax - thresholdC; // positive = above threshold
-  if (diff > 1.0) {
-    // Well above X → daily max can't be exactly X → WON
-    return diff;
-  } else if (diff > -1.0) {
-    // Within ±1°C of threshold → HIGH RISK (might peak at exactly X)
-    return diff;
-  } else {
-    // More than 1°C below threshold
-    if (currentHour >= 14 && diff > -3.0) {
-      // Past typical peak time and within 3°C below → still risky (could peak at X)
-      return diff; // negative → AT RISK / HIGH
-    } else {
-      // Before peak, or too far below (>3°C) → temp won't be exactly X
-      return Math.abs(diff);
-    }
+
+  // "= X" NO: risk is that daily max peaks right at threshold
+  const curr = currentT ?? maxObs;
+  if (curr === null) return Infinity;
+
+  const absDiff = Math.abs(curr - thresholdC);
+
+  const allFcastVals = Object.values(fcastTemps);
+  const maxFcast = allFcastVals.length ? Math.max(...allFcastVals) : null;
+  const futureFcast = Object.entries(fcastTemps)
+    .filter(([h]) => parseInt(h) > currentHour)
+    .map(([, v]) => v);
+
+  // Forecast daily max is 2°C+ above threshold → temp will clearly exceed X → max won't be exactly X → SAFE
+  if (maxFcast !== null && maxFcast >= thresholdC + 2) return 10;
+
+  // Late afternoon + temp clearly below threshold: won't reach X
+  if (currentHour >= 15 && curr < thresholdC - 2) {
+    const staysNear = futureFcast.length > 0 && futureFcast.every(v => Math.abs(v - thresholdC) <= 1.5);
+    if (!staysNear) return 10;
   }
+
+  // Remaining forecast hours all hovering near threshold → AT RISK (may plateau at X)
+  if (futureFcast.length > 0 && futureFcast.every(v => Math.abs(v - thresholdC) <= 1)) {
+    return 0.5;
+  }
+
+  // Morning (< 13h): temp hasn't peaked yet, add buffer — 2°C away is not yet concerning
+  if (currentHour < 13) return absDiff + 2;
+
+  // Afternoon: use raw distance (≤1 = AT RISK, user said 1°C after 14h is the danger zone)
+  return absDiff;
 }
 
 // ── Card builder ──────────────────────────────────────────────────────────────
@@ -460,23 +478,26 @@ function buildCard(cityName, citySlug, positions, iemTemps, omData) {
     const isNo = p.outcome === 'No';
 
     let dist;
-    if (effMax !== null) {
-      if (isNo) {
-        dist = calcDist(p.thresholdC, p.isOrHigher, effMax, currentHour);
+    if (isNo) {
+      if (currentT !== null || maxObs !== null) {
+        dist = calcDist(p.thresholdC, p.isOrHigher, currentT, maxObs, fcastTemps, currentHour);
+      } else if (p.curPrice != null) {
+        dist = (p.curPrice - 0.5) * 4.0; // price fallback
       } else {
-        dist = p.thresholdC - effMax; // YES bets: standard
+        dist = Infinity;
       }
-    } else if (isNo && p.curPrice != null) {
-      dist = (p.curPrice - 0.5) * 4.0; // price fallback
     } else {
-      dist = Infinity;
+      dist = effMax !== null ? p.thresholdC - effMax : Infinity; // YES bets (not used for risk)
     }
 
     if (isNo) {
       minDist = Math.min(minDist, dist);
       noCount++;
-      // A "= X" NO bet is WON when effMax is well above threshold
-      const isWon = !p.isOrHigher && effMax !== null && effMax > p.thresholdC + 1.0;
+      // "≥ X" NO: effectively won if late + well below threshold
+      // "= X" NO: won when real observed max clearly surpassed threshold
+      const isWon = p.isOrHigher
+        ? (currentHour >= 18 && maxObs !== null && p.thresholdC - maxObs >= 2.5)
+        : (maxObs !== null && maxObs > p.thresholdC + 1.0);
       if (isWon) wonCount++;
     }
 
@@ -497,12 +518,14 @@ function buildCard(cityName, citySlug, positions, iemTemps, omData) {
   // ── Bet rows ──
   const betRows = parsed.map(p => {
     const isNo  = p.outcome === 'No';
-    const isWon = isNo && !p.isOrHigher && effMax !== null && effMax > p.thresholdC + 1.0;
+    const isWon = isNo && (p.isOrHigher
+      ? (currentHour >= 18 && maxObs !== null && p.thresholdC - maxObs >= 2.5)
+      : (maxObs !== null && maxObs > p.thresholdC + 1.0));
 
     let dist = null, priceFallback = false;
     if (isNo && p.thresholdC != null) {
-      if (effMax !== null) {
-        dist = calcDist(p.thresholdC, p.isOrHigher, effMax, currentHour);
+      if (currentT !== null || maxObs !== null) {
+        dist = calcDist(p.thresholdC, p.isOrHigher, currentT, maxObs, fcastTemps, currentHour);
       } else if (p.curPrice != null) {
         dist = (p.curPrice - 0.5) * 4.0;
         priceFallback = true;
@@ -512,7 +535,7 @@ function buildCard(cityName, citySlug, positions, iemTemps, omData) {
     // Display number: currentTemp - threshold (how far current temp is from the target)
     const diff = (currentT !== null && p.thresholdC !== null) ? currentT - p.thresholdC : null;
 
-    const rowCls = isWon ? 'won' : (dist !== null ? (dist <= 0 ? 'at-risk' : dist <= 1.5 ? 'warning' : '') : '');
+    const rowCls = isWon ? 'won' : (dist !== null ? (dist <= 1 ? 'at-risk' : dist <= 2.5 ? 'warning' : '') : '');
     const op     = p.isOrHigher ? '≥' : '=';
 
     let distStr;
@@ -527,16 +550,30 @@ function buildCard(cityName, citySlug, positions, iemTemps, omData) {
       distStr = `<span class="bet-margin ${marginClass(dist)}">${diff >= 0 ? '+' : ''}${diff.toFixed(1)}°C</span>`;
     }
 
-    const pnlCls = (p.cashPnl || 0) >= 0 ? 'color:#3fb950' : 'color:#f85149';
-    const pnlStr = ((p.cashPnl || 0) >= 0 ? '+' : '') + '$' + Math.abs(p.cashPnl || 0).toFixed(2);
+    const pnl       = p.cashPnl  || 0;
+    const size      = p.size     || 0;
+    const curPriceF = p.curPrice || 0;
+    // Total profit from entry if bet resolves in our favor (each share pays $1)
+    const winProfit = isNo ? size * (1.0 - curPriceF) + pnl : null;
+
+    const pnlCls = pnl >= 0 ? 'color:#3fb950' : 'color:#f85149';
+    const pnlStr = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2);
+    const sizeStr = size > 0 ? `×${Number.isInteger(size) ? size : size.toFixed(1)}` : '';
+
+    let winLine = '';
+    if (winProfit !== null) {
+      const winCls = winProfit >= 0 ? 'color:#3fb950' : 'color:#f85149';
+      const winStr = (winProfit >= 0 ? '+' : '') + '$' + Math.abs(winProfit).toFixed(2);
+      winLine = `<span style="${winCls};font-size:10px">${winStr} if win</span><br>`;
+    }
 
     return `<div class="bet-row ${rowCls}">
       <span class="badge ${isNo ? 'badge-no' : 'badge-yes'}">${p.outcome.toUpperCase()}</span>
       <span class="bet-threshold"><span class="op">${op}</span>${p.threshold}°${p.unit}</span>
       ${distStr}
       <div class="bet-meta">
-        <b>${((p.curPrice || 0) * 100).toFixed(1)}¢</b><br>
-        <span style="${pnlCls}">${pnlStr}</span>
+        <b>${(curPriceF * 100).toFixed(1)}¢</b> <span style="color:#8b949e;font-size:11px;font-weight:600">${sizeStr}</span><br>
+        ${winLine}<span style="${pnlCls};font-size:10px">${pnlStr} P&L</span>
       </div>
     </div>`;
   }).join('');
