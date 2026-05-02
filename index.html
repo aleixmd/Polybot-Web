@@ -187,7 +187,7 @@ function parseTitle(title) {
   const cityM = title.match(/temperature in ([A-Za-z\s\-]+?) be/i);
   const cityName = cityM ? cityM[1].trim() : '';
   const citySlug = cityName.toLowerCase().replace(/\bnyc\b/i, 'nyc').replace(/\s+/g, '-');
-  const thrM = title.match(/be (-?\d+(?:\.\d+)?)°?([CF])/i);
+  const thrM = title.match(/be (-?\d+(?:\.\d+)?)\s*°?\s*([CF])\b/i) || title.match(/(-?\d+(?:\.\d+)?)\s*°\s*([CF])\b/i);
   const threshold = thrM ? parseFloat(thrM[1]) : null;
   const unit = thrM ? thrM[2].toUpperCase() : 'C';
   const isOrHigher = title.toLowerCase().includes('or higher');
@@ -285,6 +285,24 @@ async function fetchOMWithRetry(lat, lon, tz) {
   catch { await delay(700); return fetchOM(lat, lon, tz); }
 }
 
+async function fetchGFS(lat, lon, tz) {
+  const url = new URL('https://api.open-meteo.com/v1/forecast');
+  url.searchParams.set('latitude',         lat);
+  url.searchParams.set('longitude',        lon);
+  url.searchParams.set('timezone',         tz);
+  url.searchParams.set('hourly',           'temperature_2m');
+  url.searchParams.set('temperature_unit', 'celsius');
+  url.searchParams.set('forecast_days',    '1');
+  url.searchParams.set('past_days',        '0');
+  url.searchParams.set('models',           'gfs_seamless');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal });
+    return r.json();
+  } finally { clearTimeout(timer); }
+}
+
 // ── Chart ─────────────────────────────────────────────────────────────────────
 const _charts = {};
 
@@ -334,7 +352,7 @@ function renderChart(canvasId, slots, pastTemps, fcastTemps, currentSlot, thresh
         { label: 'Observed', data: pastData,
           borderColor: '#58a6ff', borderWidth: 2.5,
           pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3, spanGaps: false },
-        { label: 'Forecast (OM)', data: fcastData,
+        { label: 'Forecast', data: fcastData,
           borderColor: '#8b949e', borderWidth: 1.5, borderDash: [4,4],
           pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3, spanGaps: false },
       ]
@@ -347,7 +365,7 @@ function renderChart(canvasId, slots, pastTemps, fcastTemps, currentSlot, thresh
         tooltip: {
           backgroundColor: '#1c2128', borderColor: '#30363d', borderWidth: 1,
           titleColor: '#8b949e', bodyColor: '#e6edf3', padding: 8,
-          filter: item => item.parsed.y !== null,
+          filter: item => item.parsed.y !== null && (item.dataset.label === 'Observed' || item.dataset.label === 'Forecast'),
           callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(1)}°C` }
         }
       },
@@ -417,26 +435,46 @@ function calcDist(thresholdC, isOrHigher, currentT, maxObs, fcastTemps, currentS
 }
 
 // ── Card builder ──────────────────────────────────────────────────────────────
-function buildCard(cityName, citySlug, positions, iemTemps, omData, wuCurrentTemp = null) {
+function buildCard(cityName, citySlug, positions, iemTemps, omData, wuCurrentTemp = null, gfsData = null) {
   const meta = CITIES[citySlug];
   const tz   = meta?.tz ?? 'UTC';
   const currentSlot = getLocalHour(tz); // float: 10=10:00, 10.5=10:30
   const slots = Array.from({ length: 48 }, (_, i) => i * 0.5); // 0, 0.5, 1, ..., 23.5
 
-  // Past: WU observations (30-min slots). Gaps + future: OM hourly.
-  const pastTemps  = { ...iemTemps };
-  const fcastTemps = {};
+  // Build per-hour averaged forecast from OM ECMWF + GFS
   const omTimes = omData?.hourly?.time ?? [];
   const omTemps = omData?.hourly?.temperature_2m ?? [];
+  const gfsTimes = gfsData?.hourly?.time ?? [];
+  const gfsTemps = gfsData?.hourly?.temperature_2m ?? [];
+
+  // Index GFS by hour for quick lookup
+  const gfsByHour = {};
+  gfsTimes.forEach((t, i) => {
+    const h = parseInt(t.slice(11, 13));
+    if (gfsTemps[i] != null) gfsByHour[h] = gfsTemps[i];
+  });
+
+  // Average OM + GFS per hour; fall back to whichever is available
+  const avgFcastByHour = {};
   omTimes.forEach((t, i) => {
-    const h = parseInt(t.slice(11, 13)); // OM is hourly → integer slots
-    const v = omTemps[i];
-    if (v == null) return;
+    const h = parseInt(t.slice(11, 13));
+    const om = omTemps[i];
+    const gfs = gfsByHour[h] ?? null;
+    if (om != null && gfs != null) avgFcastByHour[h] = (om + gfs) / 2;
+    else if (om != null)           avgFcastByHour[h] = om;
+    else if (gfs != null)          avgFcastByHour[h] = gfs;
+  });
+
+  // Past: WU observations (30-min slots). Gaps + future: averaged OM/GFS hourly.
+  const pastTemps  = { ...iemTemps };
+  const fcastTemps = {};
+  Object.entries(avgFcastByHour).forEach(([hStr, v]) => {
+    const h = parseInt(hStr);
     if (h > currentSlot)        fcastTemps[h] = v;
     else if (!(h in pastTemps)) pastTemps[h]  = v; // fill WU gap with OM
   });
   const omCurrH = Math.floor(currentSlot);
-  const omCurr  = omTemps[omCurrH];
+  const omCurr  = avgFcastByHour[omCurrH] ?? null;
   if (omCurr != null) {
     if (!(currentSlot in pastTemps)) pastTemps[currentSlot] = omCurr;
     fcastTemps[currentSlot] = omCurr;
@@ -679,23 +717,25 @@ async function loadAll() {
 
     const slugs = Object.keys(cityMap);
 
-    // Fetch WU (observed) + OM (forecast) per city — parallel within city, sequential between
-    const iemMap = {}, wuCurrentMap = {}, omMap = {};
+    // Fetch WU (observed) + OM ECMWF + GFS (forecast) per city — parallel within city, sequential between
+    const iemMap = {}, wuCurrentMap = {}, omMap = {}, gfsMap = {};
     for (let i = 0; i < slugs.length; i++) {
       const slug = slugs[i];
       const meta = CITIES[slug];
       document.getElementById('summary').textContent =
         `${positions.length} bets · Fetching temp ${i + 1}/${slugs.length}…`;
 
-      const [wuRes, omRes] = await Promise.allSettled([
+      const [wuRes, omRes, gfsRes] = await Promise.allSettled([
         meta?.icao ? fetchWU(meta.icao) : Promise.resolve({ hourly: {}, currentTempC: null }),
         meta       ? fetchOMWithRetry(meta.lat, meta.lon, meta.tz) : Promise.resolve(null),
+        meta       ? fetchGFS(meta.lat, meta.lon, meta.tz) : Promise.resolve(null),
       ]);
 
       const wu = wuRes.status === 'fulfilled' ? wuRes.value : { hourly: {}, currentTempC: null };
       iemMap[slug]       = wu.hourly;
       wuCurrentMap[slug] = wu.currentTempC;
       omMap[slug]        = omRes.status === 'fulfilled' ? omRes.value : null;
+      gfsMap[slug]       = gfsRes.status === 'fulfilled' ? gfsRes.value : null;
 
       if (i < slugs.length - 1) await delay(300);
     }
@@ -717,7 +757,7 @@ async function loadAll() {
     // Build + sort cards (most at risk first, WON cards go to bottom)
     const cards = slugs
       .filter(slug => cityMap[slug].positions.length > 0) // skip cities with no remaining positions
-      .map(slug => buildCard(cityMap[slug].cityName, slug, cityMap[slug].positions, iemMap[slug], omMap[slug], wuCurrentMap[slug]))
+      .map(slug => buildCard(cityMap[slug].cityName, slug, cityMap[slug].positions, iemMap[slug], omMap[slug], wuCurrentMap[slug], gfsMap[slug]))
       .sort((a, b) => a.sort - b.sort || a.minDist - b.minDist);
 
     document.getElementById('root').innerHTML = cards.map(c => c.html).join('');
