@@ -25,6 +25,16 @@ header h1 { font-size: 18px; font-weight: 700; color: #e6edf3; }
 }
 #refresh-btn:hover { background: #30363d; }
 
+#stats-bar {
+  display: flex; gap: 28px; flex-wrap: wrap;
+  padding: 10px 0 14px; margin-bottom: 10px;
+  border-bottom: 1px solid #21262d; font-size: 13px; color: #8b949e;
+}
+#stats-bar .stat-label { font-size: 11px; color: #484f58; display: block; margin-bottom: 2px; }
+#stats-bar .stat-val { font-weight: 700; color: #e6edf3; font-size: 14px; }
+.stat-pos { color: #3fb950 !important; }
+.stat-neg { color: #f85149 !important; }
+
 #root { display: flex; flex-direction: column; gap: 14px; }
 
 .city-card {
@@ -109,6 +119,10 @@ header h1 { font-size: 18px; font-weight: 700; color: #e6edf3; }
   <button id="refresh-btn" onclick="loadAll()">↻ Refresh</button>
 </header>
 
+<div id="stats-bar">
+  <div><span class="stat-label">Positions value</span><span class="stat-val" id="stat-portfolio">–</span></div>
+  <div><span class="stat-label">Total if win</span><span class="stat-val stat-pos" id="stat-total-win">–</span></div>
+</div>
 <div id="root"><div class="loading">Loading positions…</div></div>
 
 <script>
@@ -542,9 +556,10 @@ function buildCard(cityName, citySlug, positions, iemTemps, omData, wuCurrentTem
 
     const pnl       = p.cashPnl  || 0;
     const size      = p.size     || 0;
+    const avgPriceF = p.avgPrice || p.curPrice || 0;
     const curPriceF = p.curPrice || 0;
     // Total profit from entry if bet resolves in our favor (each share pays $1)
-    const winProfit = isNo ? size * (1.0 - curPriceF) + pnl : null;
+    const winProfit = isNo ? size * (1.0 - avgPriceF) : null;
 
     const pnlCls = pnl >= 0 ? 'color:#3fb950' : 'color:#f85149';
     const pnlStr = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2);
@@ -562,7 +577,7 @@ function buildCard(cityName, citySlug, positions, iemTemps, omData, wuCurrentTem
       <span class="bet-threshold"><span class="op">${op}</span>${p.threshold}°${p.unit}</span>
       ${distStr}
       <div class="bet-meta">
-        <b>${(curPriceF * 100).toFixed(1)}¢</b> <span style="color:#8b949e;font-size:11px;font-weight:600">${sizeStr}</span><br>
+        <b>${(avgPriceF * 100).toFixed(1)}¢</b> <span style="color:#8b949e;font-size:11px;font-weight:600">${sizeStr}</span><br>
         ${winLine}<span style="${pnlCls};font-size:10px">${pnlStr} P&L</span>
       </div>
     </div>`;
@@ -597,6 +612,40 @@ function buildCard(cityName, citySlug, positions, iemTemps, omData, wuCurrentTem
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
+function fmtUSD(v) {
+  if (v == null || isNaN(v)) return '–';
+  return '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function setPnl(id, v) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (v == null || isNaN(v)) { el.textContent = '–'; el.className = 'stat-val'; return; }
+  el.textContent = (v >= 0 ? '+' : '-') + fmtUSD(v);
+  el.className = 'stat-val ' + (v >= 0 ? 'stat-pos' : 'stat-neg');
+}
+
+async function fetchUSDCBalance() {
+  const call = async (contract) => {
+    const data = '0x70a08231' + WALLET.slice(2).padStart(64, '0');
+    const r = await fetch('https://polygon-rpc.com', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_call', id: 1, params: [{ to: contract, data }, 'latest'] })
+    });
+    const { result } = await r.json();
+    const v = parseInt(result, 16) / 1e6;
+    return isNaN(v) ? null : v;
+  };
+  try { const v = await call('0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'); if (v != null) return v; } catch {}
+  try { return await call('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'); } catch { return null; }
+}
+
+async function fetchPortfolioPnl() {
+  try {
+    const r = await fetch(`https://data-api.polymarket.com/earnings?user=${WALLET}`, { signal: AbortSignal.timeout(8000) });
+    return await r.json();
+  } catch { return null; }
+}
+
 async function loadAll() {
   const btn = document.getElementById('refresh-btn');
   btn.textContent = '↻ Loading…'; btn.disabled = true;
@@ -672,6 +721,21 @@ async function loadAll() {
       .sort((a, b) => a.sort - b.sort || a.minDist - b.minDist);
 
     document.getElementById('root').innerHTML = cards.map(c => c.html).join('');
+
+    const portfolioValue = allPositions.reduce((sum, p) => sum + (p.currentValue ?? (p.curPrice ?? 0) * (p.size ?? 0)), 0);
+    const portfolioEl = document.getElementById('stat-portfolio');
+    if (portfolioEl) portfolioEl.textContent = fmtUSD(portfolioValue);
+
+    const totalWin = allPositions.reduce((sum, p) => {
+      const isNo = (p.outcome || '').toLowerCase() === 'no';
+      if (!isNo) return sum;
+      const size = p.size || 0;
+      const avgP = p.avgPrice || p.curPrice || 0;
+      const pnl  = p.cashPnl || 0;
+      return sum + size * (1.0 - avgP);
+    }, 0);
+    const winEl = document.getElementById('stat-total-win');
+    if (winEl) winEl.textContent = '+' + fmtUSD(totalWin);
 
     const wuOk = slugs.filter(s => Object.keys(iemMap[s]).length > 0).length;
     document.getElementById('summary').textContent =
