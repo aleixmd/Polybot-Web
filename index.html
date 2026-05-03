@@ -186,7 +186,7 @@ const CITIES = {
 function parseTitle(title) {
   const cityM = title.match(/temperature in ([A-Za-z\s\-]+?) be/i);
   const cityName = cityM ? cityM[1].trim() : '';
-  const citySlug = cityName.toLowerCase().replace(/\bnyc\b/i, 'nyc').replace(/\s+/g, '-');
+  const citySlug = cityName.toLowerCase().replace(/\bnew york city\b/i, 'nyc').replace(/\bnyc\b/i, 'nyc').replace(/\s+/g, '-');
   const thrM = title.match(/be\s+(\d+(?:\.\d+)?)\s*°?\s*([CF])\b/i) || title.match(/\b(\d{2,3}(?:\.\d+)?)\s*°?\s*([CF])\b/i);
   const threshold = thrM ? parseFloat(thrM[1]) : null;
   const unit = thrM ? thrM[2].toUpperCase() : 'C';
