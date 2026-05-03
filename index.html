@@ -316,9 +316,9 @@ function renderChart(canvasId, slots, pastTemps, omFcastTemps, gfsFcastTemps, cu
   const omFcastData  = slots.map(s => s >= currentSlot ? (omFcastTemps[s]  ?? null) : null);
   const gfsFcastData = slots.map(s => s >= currentSlot ? (gfsFcastTemps[s] ?? null) : null);
   if (nowIdx < slots.length) {
-    pastData[nowIdx]     = omFcastTemps[currentSlot] ?? gfsFcastTemps[currentSlot] ?? pastTemps[currentSlot] ?? null;
-    omFcastData[nowIdx]  = omFcastTemps[currentSlot]  ?? pastData[nowIdx];
-    gfsFcastData[nowIdx] = gfsFcastTemps[currentSlot] ?? pastData[nowIdx];
+    pastData[nowIdx]     = pastTemps[currentSlot] ?? omFcastTemps[currentSlot] ?? gfsFcastTemps[currentSlot] ?? null;
+    omFcastData[nowIdx]  = pastData[nowIdx];
+    gfsFcastData[nowIdx] = pastData[nowIdx];
   }
 
   const allVals = [
