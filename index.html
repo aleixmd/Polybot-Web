@@ -306,21 +306,23 @@ async function fetchGFS(lat, lon, tz) {
 // ── Chart ─────────────────────────────────────────────────────────────────────
 const _charts = {};
 
-function renderChart(canvasId, slots, pastTemps, fcastTemps, currentSlot, threshLines) {
+function renderChart(canvasId, slots, pastTemps, omFcastTemps, gfsFcastTemps, currentSlot, threshLines) {
   const ctx = document.getElementById(canvasId)?.getContext('2d');
   if (!ctx) return;
   if (_charts[canvasId]) _charts[canvasId].destroy();
 
-  const nowIdx    = Math.round(currentSlot * 2);
-  const pastData  = slots.map(s => s < currentSlot  ? (pastTemps[s]  ?? null) : null);
-  const fcastData = slots.map(s => s >= currentSlot ? (fcastTemps[s] ?? null) : null);
+  const nowIdx       = Math.round(currentSlot * 2);
+  const pastData     = slots.map(s => s < currentSlot  ? (pastTemps[s]     ?? null) : null);
+  const omFcastData  = slots.map(s => s >= currentSlot ? (omFcastTemps[s]  ?? null) : null);
+  const gfsFcastData = slots.map(s => s >= currentSlot ? (gfsFcastTemps[s] ?? null) : null);
   if (nowIdx < slots.length) {
-    pastData[nowIdx]  = fcastTemps[currentSlot] ?? pastTemps[currentSlot] ?? null;
-    fcastData[nowIdx] = pastData[nowIdx];
+    pastData[nowIdx]     = omFcastTemps[currentSlot] ?? gfsFcastTemps[currentSlot] ?? pastTemps[currentSlot] ?? null;
+    omFcastData[nowIdx]  = omFcastTemps[currentSlot]  ?? pastData[nowIdx];
+    gfsFcastData[nowIdx] = gfsFcastTemps[currentSlot] ?? pastData[nowIdx];
   }
 
   const allVals = [
-    ...Object.values(pastTemps), ...Object.values(fcastTemps),
+    ...Object.values(pastTemps), ...Object.values(omFcastTemps), ...Object.values(gfsFcastTemps),
     ...threshLines.map(t => t.value),
   ].filter(v => v != null && isFinite(v));
   if (allVals.length === 0) return;
@@ -352,8 +354,11 @@ function renderChart(canvasId, slots, pastTemps, fcastTemps, currentSlot, thresh
         { label: 'Observed', data: pastData,
           borderColor: '#58a6ff', borderWidth: 2.5,
           pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3, spanGaps: false },
-        { label: 'Forecast', data: fcastData,
+        { label: 'OM', data: omFcastData,
           borderColor: '#8b949e', borderWidth: 1.5, borderDash: [4,4],
+          pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3, spanGaps: false },
+        { label: 'GFS', data: gfsFcastData,
+          borderColor: '#e3b341', borderWidth: 1.5, borderDash: [4,4],
           pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3, spanGaps: false },
       ]
     },
@@ -365,7 +370,7 @@ function renderChart(canvasId, slots, pastTemps, fcastTemps, currentSlot, thresh
         tooltip: {
           backgroundColor: '#1c2128', borderColor: '#30363d', borderWidth: 1,
           titleColor: '#8b949e', bodyColor: '#e6edf3', padding: 8,
-          filter: item => item.parsed.y !== null && (item.dataset.label === 'Observed' || item.dataset.label === 'Forecast'),
+          filter: item => item.parsed.y !== null && (item.dataset.label === 'Observed' || item.dataset.label === 'OM' || item.dataset.label === 'GFS'),
           callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(1)}°C` }
         }
       },
@@ -490,6 +495,21 @@ function buildCard(cityName, citySlug, positions, iemTemps, omData, wuCurrentTem
       pastTemps[half]  = Math.round(((pastTemps[h]  + pastTemps[h + 1])  / 2) * 10) / 10;
     if (!(half in fcastTemps) && (h in fcastTemps) && ((h + 1) in fcastTemps))
       fcastTemps[half] = Math.round(((fcastTemps[h] + fcastTemps[h + 1]) / 2) * 10) / 10;
+  }
+
+  // Build per-model forecast temps for charting (separate from avg fcastTemps used for risk)
+  const omByHour = {};
+  omTimes.forEach((t, i) => { const h = parseInt(t.slice(11, 13)); if (omTemps[i] != null) omByHour[h] = omTemps[i]; });
+  const currH = Math.floor(currentSlot);
+  const omFcastTemps = {}, gfsFcastTemps = {};
+  Object.entries(omByHour).forEach(([hStr, v]) => { const h = parseInt(hStr); if (h >= currH) omFcastTemps[h] = v; });
+  Object.entries(gfsByHour).forEach(([hStr, v]) => { const h = parseInt(hStr); if (h >= currH) gfsFcastTemps[h] = v; });
+  for (let h = 0; h < 23; h++) {
+    const half = h + 0.5;
+    if (!(half in omFcastTemps)  && (h in omFcastTemps)  && ((h+1) in omFcastTemps))
+      omFcastTemps[half]  = Math.round(((omFcastTemps[h]  + omFcastTemps[h+1])  / 2) * 10) / 10;
+    if (!(half in gfsFcastTemps) && (h in gfsFcastTemps) && ((h+1) in gfsFcastTemps))
+      gfsFcastTemps[half] = Math.round(((gfsFcastTemps[h] + gfsFcastTemps[h+1]) / 2) * 10) / 10;
   }
 
   const pastVals  = Object.values(pastTemps);
@@ -646,7 +666,7 @@ function buildCard(cityName, citySlug, positions, iemTemps, omData, wuCurrentTem
       </div>
     </div>`;
 
-  return { html: cardHtml, canvasId, slots, pastTemps, fcastTemps, currentSlot, threshLines, sort: risk.sort, minDist, hasTemp };
+  return { html: cardHtml, canvasId, slots, pastTemps, omFcastTemps, gfsFcastTemps, currentSlot, threshLines, sort: risk.sort, minDist, hasTemp };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -783,7 +803,7 @@ async function loadAll() {
 
     cards.forEach(c => {
       if (c.hasTemp) {
-        renderChart(c.canvasId, c.slots, c.pastTemps, c.fcastTemps, c.currentSlot, c.threshLines);
+        renderChart(c.canvasId, c.slots, c.pastTemps, c.omFcastTemps, c.gfsFcastTemps, c.currentSlot, c.threshLines);
       }
     });
 
